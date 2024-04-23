@@ -1,0 +1,98 @@
+diff -uNrp a/drivers/gpu/drm/radeon/radeon_bios.c b/drivers/gpu/drm/radeon/radeon_bios.c
+--- a/drivers/gpu/drm/radeon/radeon_bios.c	2024-04-17 09:23:43.000000000 +0000
++++ b/drivers/gpu/drm/radeon/radeon_bios.c	2024-04-19 21:41:27.200912518 +0000
+@@ -32,6 +32,8 @@
+ 
+ #include <drm/drm_device.h>
+ 
++#include <linux/firmware.h>
++
+ #include "atom.h"
+ #include "radeon.h"
+ #include "radeon_reg.h"
+@@ -137,6 +139,41 @@ free_bios:
+ 	return false;
+ }
+ 
++static bool radeon_read_bios_from_firmware(struct radeon_device *rdev)
++{
++	const uint8_t __iomem *bios;
++	resource_size_t size;
++	const struct firmware *fw = NULL;
++
++	request_firmware(&fw, "radeon/vbios.bin", rdev->dev);
++	if (!fw) {
++		DRM_ERROR("No bios\n");
++		return false;
++	}
++	size = fw->size;
++	bios = fw->data;
++
++	if (!bios) {
++		DRM_ERROR("No bios\n");
++		return false;
++	}
++
++	if (size == 0 || bios[0] != 0x55 || bios[1] != 0xaa) {
++		DRM_ERROR("wrong sig\n");
++		release_firmware(fw);
++		return false;
++	}
++	rdev->bios = kmalloc(size, GFP_KERNEL);
++	if (rdev->bios == NULL) {
++		DRM_ERROR("alloc fail\n");
++		release_firmware(fw);
++		return false;
++	}
++	memcpy(rdev->bios, bios, size);
++	release_firmware(fw);
++	return true;
++}
++
+ #ifdef CONFIG_ACPI
+ /* ATRM is used to get the BIOS on the discrete cards in
+  * dual-gpu systems.
+@@ -199,11 +236,7 @@ static bool radeon_atrm_get_bios(struct
+ 	if (rdev->flags & RADEON_IS_IGP)
+ 		return false;
+ 
+-	while ((pdev = pci_get_base_class(PCI_BASE_CLASS_DISPLAY, pdev))) {
+-		if ((pdev->class != PCI_CLASS_DISPLAY_VGA << 8) &&
+-		    (pdev->class != PCI_CLASS_DISPLAY_OTHER << 8))
+-			continue;
+-
++	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev)) != NULL) {
+ 		dhandle = ACPI_HANDLE(&pdev->dev);
+ 		if (!dhandle)
+ 			continue;
+@@ -215,6 +248,20 @@ static bool radeon_atrm_get_bios(struct
+ 		}
+ 	}
+ 
++	if (!found) {
++		while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_OTHER << 8, pdev)) != NULL) {
++			dhandle = ACPI_HANDLE(&pdev->dev);
++			if (!dhandle)
++				continue;
++
++			status = acpi_get_handle(dhandle, "ATRM", &atrm_handle);
++			if (ACPI_SUCCESS(status)) {
++				found = true;
++				break;
++			}
++		}
++	}
++
+ 	if (!found)
+ 		return false;
+ 	pci_dev_put(pdev);
+@@ -677,6 +724,9 @@ bool radeon_get_bios(struct radeon_devic
+ 		r = radeon_read_disabled_bios(rdev);
+ 	if (!r)
+ 		r = radeon_read_platform_bios(rdev);
++	if (!r)	
++		r = radeon_read_bios_from_firmware(rdev);
++		
+ 	if (!r || rdev->bios == NULL) {
+ 		DRM_ERROR("Unable to locate a BIOS ROM\n");
+ 		rdev->bios = NULL;

@@ -1,0 +1,6 @@
+buildkern
+src/orig
+src/*.rpm
+kernel.txt
+/build.sh
+out/*.rpm
